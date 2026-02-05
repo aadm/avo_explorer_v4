@@ -14,7 +14,7 @@
 #
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 import numpy as np
-import matplotlib.pyplot as plt
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -155,14 +155,14 @@ with st.sidebar:
     st.write(
         '''Porting of my old
         [AVO Explorer notebook](https://github.com/aadm/avo_explorer).
-        (aadm 2019, 2023, 2024)''')
+        (aadm 2019, 2023, 2024, 2025)''')
 
 # st.title(':grey[AVO Explorer v4]')
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # get elastic properties for default avo classes
 sh, ssb, ssg = get_avo_classes()
-avocl = sh.index.to_list()
+avo_class_options = sh.index.to_list()
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # widget: input elastic properties for shale and sand 
@@ -197,83 +197,206 @@ aa = np.arange(0,91)
 angle_range = st.select_slider(
     'Angle range', options=aa, value=[0.0, 30.0])
 angles = np.arange(angle_range[0], angle_range[1])
+if angles.size == 0:
+    angles = np.array([angle_range[0]])
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # widget: misc options
 
-cols0 = st.columns(3, gap='small')
+cols0 = st.columns(2, gap='large', vertical_alignment='center')
 with cols0[0]:
-    refl_eq = st.radio('Reflectivity equation', ['Shuey', 'Hilterman'])
+    refl_eq = st.segmented_control('Reflectivity equation', ['Shuey', 'Hilterman'], default='Shuey')
 with cols0[1]:
-    avocl = st.radio('AVO Class', avocl, index=2)
-with cols0[2]:
-    avoref = st.radio('AVO model', ['Brine Sand', 'Gas Sand'], index=1)
-
-cols1 = st.columns(2, gap='large')
-with cols1[0]:
-    avo_toggle = st.toggle('Plot AVO reference')
-with cols1[1]:
     contrib_toggle = st.toggle('Plot angle contribution')
 
+st.divider()
+
+# cols1 = st.columns(3, gap='large')
+# with cols1[0]:
+#     avo_toggle = st.toggle('Plot AVO reference')
+# with cols1[1]:
+#     selected_class = st.selectbox('AVO Class', avo_class_options, index=2)
+# with cols1[2]:
+#     avoref = st.segmented_control('AVO model', ['Brine Sand', 'Gas Sand'], default='Gas Sand')
 
 
-logs = ['VP', 'VS', 'RHO']
-for cl in avocl:
-    avorefsh = sh.loc[avocl, logs]
+# st.divider()
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# make plot
+
+def plot_rc(
+    data,
+    ang,
+    refl_eq,
+    reference=None,
+    contrib=False,
+    reference_label=None,
+    xlim=None,
+    ylim=None,
+    reference_color=None,
+):
+    '''Return Altair chart of reflection coefficient vs angle.'''
+    angles = np.asarray(ang).reshape(-1)
+    chart_segments = []
+    component_styles = {}
+
+    def add_segment(values, label, color, style='solid', width=3):
+        vals = np.asarray(values).reshape(-1)
+        segment = pd.DataFrame({
+            'Angle': angles,
+            'Amplitude': vals,
+            'Component': label,
+            'Style': style
+        })
+        chart_segments.append(segment)
+        if label not in component_styles:
+            component_styles[label] = {'color': color, 'width': width}
+
+    add_segment(data[0], f'[{refl_eq}] RC', '#000000', width=4)
+
+    if contrib:
+        if refl_eq == 'Shuey':
+            add_segment(data[1] + data[2], f'[{refl_eq}] Near', '#8c564b')
+            add_segment(data[3], f'[{refl_eq}] Far', '#ff7f0e')
+        else:
+            add_segment(data[1], f'[{refl_eq}] Near', '#8c564b')
+            add_segment(data[2], f'[{refl_eq}] Mid', '#9467bd')
+            add_segment(data[3], f'[{refl_eq}] Far', '#ff7f0e')
+
+    if reference is not None:
+        label = f'{reference_label} Reference' if reference_label else 'Reference'
+        ref_color = reference_color or '#1f77b4'
+        add_segment(reference, label, ref_color, style='dashed', width=3)
+
+    chart_data = pd.concat(chart_segments, ignore_index=True)
+    style_domain = chart_data['Style'].unique().tolist()
+    dash_map = {'solid': [1, 0], 'dashed': [6, 3]}
+    style_range = [dash_map.get(style, [1]) for style in style_domain]
+
+    component_order = list(component_styles.keys())
+    component_colors = [component_styles[label]['color'] for label in component_order]
+    component_widths = [component_styles[label]['width'] for label in component_order]
+
+    x_scale = alt.Scale(domain=xlim) if xlim else alt.Undefined
+    y_scale = alt.Scale(domain=ylim) if ylim else alt.Undefined
+
+    chart = (
+        alt.Chart(chart_data)
+        .mark_line(size=3)
+        .encode(
+            x=alt.X('Angle:Q', title='Angle of incidence', scale=x_scale),
+            y=alt.Y('Amplitude:Q', title='Amplitude', scale=y_scale),
+            color=alt.Color(
+                'Component:N',
+                scale=alt.Scale(domain=component_order, range=component_colors),
+                legend=alt.Legend(title='Component', orient='bottom', direction='horizontal'),
+            ),
+            strokeDash=alt.StrokeDash('Style:N', scale=alt.Scale(domain=style_domain, range=style_range), legend=None),
+            strokeWidth=alt.StrokeWidth(
+                'Component:N',
+                scale=alt.Scale(domain=component_order, range=component_widths),
+                legend=None,
+            ),
+        )
+        .properties(height=350)
+    )
+
+    return chart
+
+
+cols1 = st.columns([0.25, 0.8], gap='large')
+with cols1[0]:
+    avo_toggle = st.toggle('AVO reference')
+    selected_class = st.selectbox('AVO Class', avo_class_options, index=2)
+    avoref = st.radio('AVO model', ['Brine Sand', 'Gas Sand'], index=0)
+
+    logs = ['VP', 'VS', 'RHO']
+    avorefsh = sh.loc[selected_class, logs]
     if avoref == 'Brine Sand':
-        avorefss = ssb.loc[avocl, logs]
+        avorefss = ssb.loc[selected_class, logs]
     else:
-        avorefss = ssg.loc[avocl, logs]
+        avorefss = ssg.loc[selected_class, logs]
     if refl_eq == 'Shuey':
         rc_ref = shuey(*avorefsh, *avorefss, angles, approx=False)
     else:
         rc_ref = hilterman(*avorefsh, *avorefss, angles)
 
+    reference_color = '#1f77b4' if avoref == 'Brine Sand' else '#d62728'
 
-# calculate reflectivity from user input
-df = pd.DataFrame(angles, columns = ['angles'])
 
-if refl_eq == 'Shuey':
-    data = shuey(*ep_sh, *ep_ss, angles, approx=False, terms=True, angcontrib=True)
-else:
-    data = hilterman(*ep_sh, *ep_ss, angles, angcontrib=True)
-
-#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# make plot
-
-def plot_rc(data, ang, refl_eq, reference=None, contrib=contrib_toggle, ylim=None):
-    '''plot rc vs angles, aadm 2024'''
-    fig, (ax, lax) = plt.subplots(figsize=(7,5), layout='constrained', ncols=2, gridspec_kw={"width_ratios":[4, 1]})
+    # calculate reflectivity from user input
     if refl_eq == 'Shuey':
-        ax.plot(ang, data[0], lw=4, color='k', label='[{}] RC'.format(refl_eq))
-        if contrib:
-            ax.plot(ang, data[1]+data[2],  lw=2, color='b',  alpha=0.5, label='[{}] Near'.format(refl_eq))
-            ax.plot(ang, data[3], lw=2, color='r',  alpha=0.5, label='[{}] Far'.format(refl_eq))
+        data = shuey(*ep_sh, *ep_ss, angles, approx=False, terms=True, angcontrib=True)
     else:
-        ax.plot(ang, data[0], lw=4, color='k', label='[{}] RC'.format(refl_eq))
-        if contrib:
-            ax.plot(ang, data[1], lw=2, color='b',  alpha=0.5, label='[{}] Near'.format(refl_eq))
-            ax.plot(ang, data[2], lw=2, color='g',  alpha=0.5, label='[{}] Mid'.format(refl_eq))
-            ax.plot(ang, data[3], lw=2, color='r',  alpha=0.5, label='[{}] Far'.format(refl_eq))
-    if reference is not None:
-        ax.plot(ang, reference, ls=':', lw=2, color='k', label='{} Reference'.format(avocl))
+        data = hilterman(*ep_sh, *ep_ss, angles, angcontrib=True)
 
-    ax.set_xlabel('angle of incidence')
-    ax.set_ylabel('amplitude')
-    ax.grid()
-    h, l = ax.get_legend_handles_labels()
-    lax.legend(h, l, borderaxespad=0)
-    lax.axis("off")
+    # axis limit state
+    rc_values = np.asarray(data[0]).reshape(-1)
+    angle_values = np.asarray(angles).reshape(-1)
+    defaults = {
+        'axis_x_min': float(angle_values.min()) if angle_values.size else 0.0,
+        'axis_x_max': float(angle_values.max()) if angle_values.size else 0.0,
+        'axis_y_min': float(rc_values.min()) if rc_values.size else -0.5,
+        'axis_y_max': float(rc_values.max()) if rc_values.size else 0.5,
+        'lock_x_axis': False,
+        'lock_y_axis': False,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-    if ylim is not None:
-        ax.set_xlim(ylim[0], ylim[1])
-    return fig          
+    def _get_axis_limits(lock_key, min_key, max_key):
+        if not st.session_state.get(lock_key):
+            return None
+        vmin = float(st.session_state.get(min_key))
+        vmax = float(st.session_state.get(max_key))
+        if np.isclose(vmin, vmax):
+            return None
+        low, high = sorted([vmin, vmax])
+        return [low, high]
+
+    x_limits = _get_axis_limits('lock_x_axis', 'axis_x_min', 'axis_x_max')
+    y_limits = _get_axis_limits('lock_y_axis', 'axis_y_min', 'axis_y_max')
+
+with cols1[1]:
+    if avo_toggle:
+        avo_chart = plot_rc(
+            data,
+            angles,
+            refl_eq,
+            reference=rc_ref,
+            contrib=contrib_toggle,
+            reference_label=selected_class,
+            xlim=x_limits,
+            ylim=y_limits,
+            reference_color=reference_color,
+        )
+    else:
+        avo_chart = plot_rc(
+            data,
+            angles,
+            refl_eq,
+            contrib=contrib_toggle,
+            xlim=x_limits,
+            ylim=y_limits,
+        )
+    st.altair_chart(avo_chart, width=500, height=500)
 
 
-if avo_toggle:
-    fig = plot_rc(data, angles, refl_eq, reference=rc_ref)
-else:
-    fig = plot_rc(data, angles, refl_eq)
 
-st.pyplot(fig=fig, use_container_width=True)
+
+st.divider()
+axis_cols = st.columns(2, gap='large')
+with axis_cols[0]:
+    st.write('**X axis**')
+    st.checkbox('Lock x-axis', key='lock_x_axis')
+    st.number_input('Min angle', key='axis_x_min', value=st.session_state['axis_x_min'], step=1.0)
+    st.number_input('Max angle', key='axis_x_max', value=st.session_state['axis_x_max'], step=1.0)
+with axis_cols[1]:
+    st.write('**Y axis**')
+    st.checkbox('Lock y-axis', key='lock_y_axis')
+    st.number_input('Min amplitude', key='axis_y_min', value=st.session_state['axis_y_min'], step=0.05, format='%.3f')
+    st.number_input('Max amplitude', key='axis_y_max', value=st.session_state['axis_y_max'], step=0.05, format='%.3f')
 
